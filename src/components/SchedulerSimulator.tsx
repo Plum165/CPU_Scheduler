@@ -14,23 +14,26 @@ import {
   simulatePriorityPreemptive 
 } from '../algorithms';
 import GanttChart, { getProcessColorClass } from './GanttChart';
+import { THEME_ACCENTS } from '../App';
 import { exportToExcel } from '../excelExporter';
 import { 
   FileText, Play, Pause, SkipBack, ChevronLeft, ChevronRight, 
   Download, Shuffle, Plus, Trash2, Sliders, RefreshCw, LayoutGrid
 } from 'lucide-react';
 
-const INITIAL_PROCESSES: ProcessInput[] = [
+const INITIAL_PROCESSES: any[] = [
   { id: 0, arrivalTime: 0, burstTime: 5, priority: 3 },
   { id: 1, arrivalTime: 1, burstTime: 3, priority: 1 },
   { id: 2, arrivalTime: 2, burstTime: 8, priority: 4 },
   { id: 3, arrivalTime: 3, burstTime: 6, priority: 2 }
 ];
 
-export default function SchedulerSimulator() {
-  const [processes, setProcesses] = useState<ProcessInput[]>(INITIAL_PROCESSES);
+export default function SchedulerSimulator({ theme = 'indigo' }: { theme?: string }) {
+  const currAccent = THEME_ACCENTS[theme] || THEME_ACCENTS.indigo;
+  const [processes, setProcesses] = useState<any[]>(INITIAL_PROCESSES);
   const [algorithm, setAlgorithm] = useState<SchedulingAlgorithm>('FCFS');
   const [timeQuantum, setTimeQuantum] = useState<number>(2);
+  const [rrMode, setRrMode] = useState<'standard' | 'academic'>('standard');
   const [showPasteModal, setShowPasteModal] = useState<boolean>(false);
   const [pasteData, setPasteData] = useState<string>('');
   const [errorMessage, setErrorMessage] = useState<string>('');
@@ -50,7 +53,7 @@ export default function SchedulerSimulator() {
     // Stop playback on input change
     setIsPlaying(false);
     setPlaybackTime(0);
-  }, [processes, algorithm, timeQuantum]);
+  }, [processes, algorithm, timeQuantum, rrMode]);
 
   // Clean intervals on unmount
   useEffect(() => {
@@ -90,28 +93,35 @@ export default function SchedulerSimulator() {
       return;
     }
 
+    const sanitized: ProcessInput[] = processes.map(p => ({
+      id: Number(p.id),
+      arrivalTime: p.arrivalTime === '' ? 0 : Number(p.arrivalTime),
+      burstTime: p.burstTime === '' ? 1 : Math.max(1, Number(p.burstTime)),
+      priority: p.priority === '' ? 3 : Number(p.priority)
+    }));
+
     let result: SimulationResult;
     switch (algorithm) {
       case 'FCFS':
-        result = simulateFCFS(processes);
+        result = simulateFCFS(sanitized);
         break;
       case 'SJF':
-        result = simulateSJF(processes);
+        result = simulateSJF(sanitized);
         break;
       case 'SRTF':
-        result = simulateSRTF(processes);
+        result = simulateSRTF(sanitized);
         break;
       case 'RR':
-        result = simulateRR(processes, timeQuantum);
+        result = simulateRR(sanitized, timeQuantum, rrMode);
         break;
       case 'PRI_NP':
-        result = simulatePriorityNonPreemptive(processes);
+        result = simulatePriorityNonPreemptive(sanitized);
         break;
       case 'PRI_P':
-        result = simulatePriorityPreemptive(processes);
+        result = simulatePriorityPreemptive(sanitized);
         break;
       default:
-        result = simulateFCFS(processes);
+        result = simulateFCFS(sanitized);
     }
     setSimResult(result);
     // Boundary checks for playback when timeline changes
@@ -136,7 +146,7 @@ export default function SchedulerSimulator() {
   };
 
   // Edit fields
-  const handleUpdateProcessValue = (id: number, field: keyof ProcessInput, value: number) => {
+  const handleUpdateProcessValue = (id: number, field: keyof ProcessInput, value: number | '') => {
     setProcesses(prev =>
       prev.map(p => (p.id === id ? { ...p, [field]: value } : p))
     );
@@ -257,12 +267,13 @@ export default function SchedulerSimulator() {
             <div className="space-y-4">
               <div className="flex items-center justify-between border-b border-white/10 pb-3">
                 <h3 className="font-display font-semibold text-sm text-gray-200 flex items-center gap-2">
-                  <Sliders className="w-4 h-4 text-indigo-400" /> Process Directory
+                  <Sliders className="w-4 h-4" style={{ color: currAccent.accent }} /> Process Directory
                 </h3>
                 <div className="flex gap-1.5">
                   <button
                     onClick={() => setShowPasteModal(true)}
-                    className="flex items-center gap-1 bg-slate-900 hover:bg-slate-800 text-indigo-400 border border-indigo-500/20 text-xs px-3 py-1.5 rounded-lg transition duration-150 cursor-pointer"
+                    className="flex items-center gap-1 bg-slate-900 hover:bg-slate-800 border text-xs px-3 py-1.5 rounded-lg transition duration-150 cursor-pointer"
+                    style={{ color: currAccent.accent, borderColor: `${currAccent.accent}40` }}
                     title="Paste processes.txt input text directly"
                   >
                     <FileText className="w-3.5 h-3.5" /> Import
@@ -304,33 +315,54 @@ export default function SchedulerSimulator() {
                         </td>
                         <td className="p-2">
                           <input
-                            type="number"
-                            min="0"
-                            max="50"
-                            value={p.arrivalTime}
-                            onChange={e => handleUpdateProcessValue(p.id, 'arrivalTime', Math.max(0, parseInt(e.target.value) || 0))}
-                            className="bg-slate-950 border border-white/10 rounded px-1.5 py-1 w-14 text-center focus:border-indigo-500 focus:outline-none"
+                            type="text"
+                            value={p.arrivalTime === undefined ? '' : p.arrivalTime}
+                            onChange={e => {
+                              const val = e.target.value;
+                              if (val === '') {
+                                handleUpdateProcessValue(p.id, 'arrivalTime', '');
+                              } else {
+                                const clean = val.replace(/\D/g, '');
+                                handleUpdateProcessValue(p.id, 'arrivalTime', clean === '' ? '' : parseInt(clean, 10));
+                              }
+                            }}
+                            className="bg-slate-950 border border-white/10 rounded px-1.5 py-1 w-14 text-center focus:outline-none focus:ring-1"
+                            style={{ borderColor: currAccent.accent } as React.CSSProperties}
                           />
                         </td>
                         <td className="p-2">
                           <input
-                            type="number"
-                            min="1"
-                            max="50"
-                            value={p.burstTime}
-                            onChange={e => handleUpdateProcessValue(p.id, 'burstTime', Math.max(1, parseInt(e.target.value) || 1))}
-                            className="bg-slate-950 border border-white/10 rounded px-1.5 py-1 w-14 text-center focus:border-indigo-500 focus:outline-none"
+                            type="text"
+                            value={p.burstTime === undefined ? '' : p.burstTime}
+                            onChange={e => {
+                              const val = e.target.value;
+                              if (val === '') {
+                                handleUpdateProcessValue(p.id, 'burstTime', '');
+                              } else {
+                                const clean = val.replace(/\D/g, '');
+                                handleUpdateProcessValue(p.id, 'burstTime', clean === '' ? '' : parseInt(clean, 10));
+                              }
+                            }}
+                            className="bg-slate-950 border border-white/10 rounded px-1.5 py-1 w-14 text-center focus:outline-none focus:ring-1"
+                            style={{ borderColor: currAccent.accent } as React.CSSProperties}
                           />
                         </td>
                         {(algorithm === 'PRI_NP' || algorithm === 'PRI_P') && (
                           <td className="p-2">
                             <input
-                              type="number"
-                              min="1"
-                              max="10"
-                              value={p.priority}
-                              onChange={e => handleUpdateProcessValue(p.id, 'priority', Math.max(1, parseInt(e.target.value) || 1))}
-                              className="bg-slate-950 border border-white/10 rounded px-1.5 py-1 w-14 text-center focus:border-indigo-500 focus:outline-none"
+                              type="text"
+                              value={p.priority === undefined ? '' : p.priority}
+                              onChange={e => {
+                                const val = e.target.value;
+                                if (val === '') {
+                                  handleUpdateProcessValue(p.id, 'priority', '');
+                                } else {
+                                  const clean = val.replace(/\D/g, '');
+                                  handleUpdateProcessValue(p.id, 'priority', clean === '' ? '' : parseInt(clean, 10));
+                                }
+                              }}
+                              className="bg-slate-950 border border-white/10 rounded px-1.5 py-1 w-14 text-center focus:outline-none focus:ring-1"
+                              style={{ borderColor: currAccent.accent } as React.CSSProperties}
                               title="Low priority number represents HIGHER operating priority"
                             />
                           </td>
@@ -401,25 +433,66 @@ export default function SchedulerSimulator() {
                 ))}
               </div>
 
-              {/* Round Robin Dynamic Time Slice slider */}
+              {/* Round Robin Dynamic Config */}
               {algorithm === 'RR' && (
-                <div className="bg-slate-950/40 p-4 border border-white/5 rounded-xl space-y-2 flex flex-col sm:flex-row sm:items-center sm:justify-between sm:gap-4 font-mono text-xs">
-                  <div>
-                    <h4 className="text-gray-300 font-semibold">Time Quantum (Slice Duration)</h4>
-                    <p className="text-gray-500 text-[10px] mt-0.5">CPU cycles limits per process context-switch</p>
+                <div className="space-y-4">
+                  <div className="bg-slate-950/40 p-4 border border-white/5 rounded-xl space-y-2 flex flex-col sm:flex-row sm:items-center sm:justify-between sm:gap-4 font-mono text-xs">
+                    <div>
+                      <h4 className="text-gray-300 font-semibold">Time Quantum (Slice Duration)</h4>
+                      <p className="text-gray-500 text-[10px] mt-0.5">CPU cycles limits per process context-switch</p>
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <input
+                        type="range"
+                        min="1"
+                        max="10"
+                        value={timeQuantum}
+                        onChange={e => setTimeQuantum(parseInt(e.target.value))}
+                        style={{ accentColor: currAccent.accent }}
+                      />
+                      <span 
+                        className="font-bold bg-slate-950/50 border px-2.5 py-1 rounded w-10 text-center"
+                        style={{ color: currAccent.accent, borderColor: `${currAccent.accent}4c` }}
+                      >
+                        {timeQuantum}s
+                      </span>
+                    </div>
                   </div>
-                  <div className="flex items-center gap-3">
-                    <input
-                      type="range"
-                      min="1"
-                      max="10"
-                      value={timeQuantum}
-                      onChange={e => setTimeQuantum(parseInt(e.target.value))}
-                      className="accent-indigo-500"
-                    />
-                    <span className="text-indigo-400 font-bold bg-indigo-950/50 border border-indigo-500/20 px-2.5 py-1 rounded w-10 text-center">
-                      {timeQuantum}s
-                    </span>
+
+                  <div className="bg-slate-950/40 p-4 border border-white/5 rounded-xl space-y-3 font-mono text-xs">
+                    <div>
+                      <h4 className="text-gray-300 font-semibold">Queue Theory Strategy</h4>
+                      <p className="text-gray-500 text-[10px] mt-0.5">Define ready queue behavior for newly arrived vs. preempted processes</p>
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                      <button
+                        onClick={() => setRrMode('standard')}
+                        className={`p-2.5 rounded-xl border text-left text-xs transition duration-150 cursor-pointer ${
+                          rrMode === 'standard'
+                            ? 'shadow-md shadow-indigo-500/5'
+                            : 'border-white/5 bg-slate-900/30 text-gray-400 hover:text-gray-200 hover:bg-white/5'
+                        }`}
+                        style={rrMode === 'standard' ? { borderColor: `${currAccent.accent}a3`, backgroundColor: `${currAccent.accent}15`, color: currAccent.accent } : {}}
+                      >
+                        <div className="font-semibold">Standard Temporal (FIFO)</div>
+                        <div className="text-[10px] text-gray-500 mt-1 font-sans">Strict temporal queue. Preempted resumes behind concurrent arrivals (Standard).</div>
+                      </button>
+                      <button
+                        onClick={() => setRrMode('academic')}
+                        className={`p-2.5 rounded-xl border text-left text-xs transition duration-150 cursor-pointer ${
+                          rrMode === 'academic'
+                            ? 'shadow-md shadow-indigo-500/5'
+                            : 'border-white/5 bg-slate-900/30 text-gray-400 hover:text-gray-200 hover:bg-white/5'
+                        }`}
+                        style={rrMode === 'academic' ? { borderColor: `${currAccent.accent}a3`, backgroundColor: `${currAccent.accent}15`, color: currAccent.accent } : {}}
+                      >
+                        <div className="font-semibold flex items-center justify-between">
+                          <span>Academic Circular</span>
+                          <span className="bg-emerald-500/15 text-emerald-400 text-[8px] px-1 rounded uppercase tracking-wider font-bold">P2 Supporter</span>
+                        </div>
+                        <div className="text-[10px] text-gray-500 mt-1 font-sans">Cyclical order-of-arrival PIDs. Solves textbook/Gantt problems directly! (Recommended)</div>
+                      </button>
+                    </div>
                   </div>
                 </div>
               )}

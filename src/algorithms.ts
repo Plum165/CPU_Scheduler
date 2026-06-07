@@ -425,7 +425,7 @@ export function simulateSRTF(inputs: ProcessInput[]): SimulationResult {
 /**
  * 4. ROUND ROBIN (RR)
  */
-export function simulateRR(inputs: ProcessInput[], timeQuantum: number): SimulationResult {
+export function simulateRR(inputs: ProcessInput[], timeQuantum: number, rrMode: 'standard' | 'academic' = 'standard'): SimulationResult {
   const processes: { [key: number]: Partial<ProcessResult> & { id: number } } = {};
   inputs.forEach(p => {
     processes[p.id] = {
@@ -454,111 +454,218 @@ export function simulateRR(inputs: ProcessInput[], timeQuantum: number): Simulat
   let activeId: number | null = null;
   let qRemaining = 0;
   let blockStart = 0;
+  let lastScheduledId = -1; // For academic mode tracking
 
-  // Add initial arrivals at time 0
-  while (unstarted.length > 0 && unstarted[0].arrivalTime <= 0) {
-    const p = unstarted.shift()!;
-    readyQueue.push(p.id);
-  }
+  if (rrMode === 'standard') {
+    // Add initial arrivals at time 0
+    while (unstarted.length > 0 && unstarted[0].arrivalTime <= 0) {
+      const p = unstarted.shift()!;
+      readyQueue.push(p.id);
+    }
 
-  while (completedCount < n) {
-    if (activeId === null) {
-      if (readyQueue.length === 0) {
-        // Idle
-        const nextArrival = unstarted.length > 0 ? unstarted[0].arrivalTime : t + 1;
+    while (completedCount < n) {
+      if (activeId === null) {
+        if (readyQueue.length === 0) {
+          // Idle
+          const nextArrival = unstarted.length > 0 ? unstarted[0].arrivalTime : t + 1;
+          gantt.push({
+            type: 'idle',
+            startTime: t,
+            endTime: nextArrival,
+          });
+
+          for (let timeStep = t; timeStep < nextArrival; timeStep++) {
+            // Handle arrivals mid-idle step
+            while (unstarted.length > 0 && unstarted[0].arrivalTime <= timeStep) {
+              const p = unstarted.shift()!;
+              readyQueue.push(p.id);
+            }
+
+            trace.push({
+              time: timeStep,
+              readyQueue: [...readyQueue],
+              runningProcessId: null,
+              explanation: `No process is ready. CPU idling. Waiting for next arrival.`,
+              remainingBursts: { ...remainingBursts },
+            });
+          }
+          t = nextArrival;
+          
+          // Push newly arrived
+          while (unstarted.length > 0 && unstarted[0].arrivalTime <= t) {
+            const p = unstarted.shift()!;
+            if (!readyQueue.includes(p.id)) readyQueue.push(p.id);
+          }
+          continue;
+        }
+
+        // Pop next from Ready Queue
+        activeId = readyQueue.shift()!;
+        qRemaining = Math.min(timeQuantum, remainingBursts[activeId]);
+        blockStart = t;
+
+        if (processes[activeId].startTime === -1) {
+          processes[activeId].startTime = t;
+        }
+      }
+
+      // Capture other processes ready queue list
+      const tracingReady = [...readyQueue];
+
+      trace.push({
+        time: t,
+        readyQueue: tracingReady,
+        runningProcessId: activeId,
+        explanation: `Process P${activeId} executes. Time quantum slice remaining: ${qRemaining}s (burst left: ${remainingBursts[activeId]}s).`,
+        remainingBursts: { ...remainingBursts },
+      });
+
+      // Execute 1 unit
+      remainingBursts[activeId]--;
+      qRemaining--;
+      t++;
+
+      // Load newly arrived processes EXACTLY at this time unit
+      // Crucial operating system rule: new processes arriving at 't' enter ready queue BEFORE preempted processes go back in
+      const newlyArrived: number[] = [];
+      while (unstarted.length > 0 && unstarted[0].arrivalTime <= t) {
+        const p = unstarted.shift()!;
+        newlyArrived.push(p.id);
+      }
+      // Push new arrivals into main queue
+      readyQueue.push(...newlyArrived);
+
+      if (remainingBursts[activeId] === 0) {
+        // Process finished
+        processes[activeId].completionTime = t;
+        processes[activeId].turnaroundTime = t - processes[activeId].arrivalTime!;
+        processes[activeId].waitingTime = processes[activeId].turnaroundTime! - processes[activeId].burstTime!;
+        completedCount++;
+
         gantt.push({
-          type: 'idle',
-          startTime: t,
-          endTime: nextArrival,
+          type: 'process',
+          processId: activeId,
+          startTime: blockStart,
+          endTime: t,
         });
 
-        for (let timeStep = t; timeStep < nextArrival; timeStep++) {
-          // Handle arrivals mid-idle step
-          while (unstarted.length > 0 && unstarted[0].arrivalTime <= timeStep) {
-            const p = unstarted.shift()!;
-            readyQueue.push(p.id);
-          }
+        activeId = null;
+      } else if (qRemaining === 0) {
+        // Quantum time limit exhausted, Preempt & send to back of queue
+        gantt.push({
+          type: 'process',
+          processId: activeId,
+          startTime: blockStart,
+          endTime: t,
+        });
 
-          trace.push({
-            time: timeStep,
-            readyQueue: [...readyQueue],
-            runningProcessId: null,
-            explanation: `No process is ready. CPU idling. Waiting for next arrival.`,
-            remainingBursts: { ...remainingBursts },
+        readyQueue.push(activeId);
+        activeId = null;
+      }
+    }
+  } else {
+    // Academic Circular Mode (scans candidates in circle of arrived/active process IDs)
+    while (completedCount < n) {
+      // Find arrived candidates with remaining burst
+      const candidates = inputs.filter(p => p.arrivalTime <= t && remainingBursts[p.id] > 0);
+
+      if (activeId === null) {
+        if (candidates.length === 0) {
+          // Idle state until next arrival
+          const nextArriv = unstarted.length > 0 ? unstarted[0].arrivalTime : t + 1;
+          gantt.push({
+            type: 'idle',
+            startTime: t,
+            endTime: nextArriv,
           });
+
+          for (let timeStep = t; timeStep < nextArriv; timeStep++) {
+            trace.push({
+              time: timeStep,
+              readyQueue: [],
+              runningProcessId: null,
+              explanation: `No process is ready at t=${timeStep}s. CPU idling. Waiting for next arrival.`,
+              remainingBursts: { ...remainingBursts },
+            });
+          }
+          t = nextArriv;
+          
+          // Pull arrived ones out of unstarted
+          while (unstarted.length > 0 && unstarted[0].arrivalTime <= t) {
+            unstarted.shift();
+          }
+          continue;
         }
-        t = nextArrival;
-        
-        // Push newly arrived
-        while (unstarted.length > 0 && unstarted[0].arrivalTime <= t) {
-          const p = unstarted.shift()!;
-          if (!readyQueue.includes(p.id)) readyQueue.push(p.id);
+
+        // Sort candidates based on academic circular distance from lastScheduledId
+        const sortedCandidates = [...candidates].sort((a, b) => {
+          const distA = a.id > lastScheduledId ? (a.id - lastScheduledId) : (a.id - lastScheduledId + 1000);
+          const distB = b.id > lastScheduledId ? (b.id - lastScheduledId) : (b.id - lastScheduledId + 1000);
+          return distA - distB;
+        });
+
+        activeId = sortedCandidates[0].id;
+        qRemaining = Math.min(timeQuantum, remainingBursts[activeId]);
+        blockStart = t;
+        lastScheduledId = activeId;
+
+        if (processes[activeId].startTime === -1) {
+          processes[activeId].startTime = t;
         }
-        continue;
       }
 
-      // Pop next from Ready Queue
-      activeId = readyQueue.shift()!;
-      qRemaining = Math.min(timeQuantum, remainingBursts[activeId]);
-      blockStart = t;
+      // Ready list for tracing: Other active candidates ordered circularly for presentation
+      const readyQueueForTrace = candidates
+        .filter(c => c.id !== activeId)
+        .sort((a, b) => {
+          const distA = a.id > lastScheduledId ? (a.id - lastScheduledId) : (a.id - lastScheduledId + 1000);
+          const distB = b.id > lastScheduledId ? (b.id - lastScheduledId) : (b.id - lastScheduledId + 1000);
+          return distA - distB;
+        })
+        .map(c => c.id);
 
-      if (processes[activeId].startTime === -1) {
-        processes[activeId].startTime = t;
+      trace.push({
+        time: t,
+        readyQueue: readyQueueForTrace,
+        runningProcessId: activeId,
+        explanation: `Process P${activeId} executes. Time quantum slice remaining: ${qRemaining}s (burst left: ${remainingBursts[activeId]}s).`,
+        remainingBursts: { ...remainingBursts },
+      });
+
+      // Execute 1 unit
+      remainingBursts[activeId]--;
+      qRemaining--;
+      t++;
+
+      // Pull from unstarted for any newly arrived strictly up to 't'
+      while (unstarted.length > 0 && unstarted[0].arrivalTime <= t) {
+        unstarted.shift();
       }
-    }
 
-    // Capture other processes ready queue list
-    const tracingReady = [...readyQueue];
+      if (remainingBursts[activeId] === 0) {
+        processes[activeId].completionTime = t;
+        processes[activeId].turnaroundTime = t - processes[activeId].arrivalTime!;
+        processes[activeId].waitingTime = processes[activeId].turnaroundTime! - processes[activeId].burstTime!;
+        completedCount++;
 
-    trace.push({
-      time: t,
-      readyQueue: tracingReady,
-      runningProcessId: activeId,
-      explanation: `Process P${activeId} executes. Time quantum slice remaining: ${qRemaining}s (burst left: ${remainingBursts[activeId]}s).`,
-      remainingBursts: { ...remainingBursts },
-    });
+        gantt.push({
+          type: 'process',
+          processId: activeId,
+          startTime: blockStart,
+          endTime: t,
+        });
 
-    // Execute 1 unit
-    remainingBursts[activeId]--;
-    qRemaining--;
-    t++;
+        activeId = null;
+      } else if (qRemaining === 0) {
+        gantt.push({
+          type: 'process',
+          processId: activeId,
+          startTime: blockStart,
+          endTime: t,
+        });
 
-    // Load newly arrived processes EXACTLY at this time unit
-    // Crucial operating system rule: new processes arriving at 't' enter ready queue BEFORE preempted processes go back in
-    const newlyArrived: number[] = [];
-    while (unstarted.length > 0 && unstarted[0].arrivalTime <= t) {
-      const p = unstarted.shift()!;
-      newlyArrived.push(p.id);
-    }
-    // Push new arrivals into main queue
-    readyQueue.push(...newlyArrived);
-
-    if (remainingBursts[activeId] === 0) {
-      // Process finished
-      processes[activeId].completionTime = t;
-      processes[activeId].turnaroundTime = t - processes[activeId].arrivalTime!;
-      processes[activeId].waitingTime = processes[activeId].turnaroundTime! - processes[activeId].burstTime!;
-      completedCount++;
-
-      gantt.push({
-        type: 'process',
-        processId: activeId,
-        startTime: blockStart,
-        endTime: t,
-      });
-
-      activeId = null;
-    } else if (qRemaining === 0) {
-      // Quantum time limit exhausted, Preempt & send to back of queue
-      gantt.push({
-        type: 'process',
-        processId: activeId,
-        startTime: blockStart,
-        endTime: t,
-      });
-
-      readyQueue.push(activeId);
-      activeId = null;
+        activeId = null;
+      }
     }
   }
 
@@ -575,7 +682,7 @@ export function simulateRR(inputs: ProcessInput[], timeQuantum: number): Simulat
   const totalWaiting = finishedProcs.reduce((acc, p) => acc + p.waitingTime, 0);
 
   return {
-    algorithm: `Round Robin (RR, Quantum = ${timeQuantum})`,
+    algorithm: `Round Robin (RR, Quantum = ${timeQuantum}${rrMode === 'academic' ? ', Academic' : ''})`,
     processes: finishedProcs.sort((a, b) => a.id - b.id),
     gantt,
     trace,
