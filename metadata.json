@@ -1,0 +1,6 @@
+{
+  "name": "CPU Scheduling Academy",
+  "description": "An interactive, fully offline educational platform and simulator for CPU scheduling algorithms, complete with animated Gantt charts, worked solutions, interactive practice quizzes, and multi-sheet Excel exports.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
